@@ -1,4 +1,4 @@
-#   Copyright (c) 2019 PaddlePaddle Authors. All Rights Reserved.
+# Copyright (c) 2019 PaddlePaddle Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,165 +11,77 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-from model import build_generator_resnet_9blocks, build_gen_discriminator
+from model import *
 import paddle.fluid as fluid
 
-step_per_epoch = 1335
-cycle_loss_factor = 10.0
+step_per_epoch = 2974
+lambda_A = 10.0
+lambda_B = 10.0
+lambda_identity = 0.5
 
 
-class GATrainer():
-    def __init__(self, input_A, input_B):
-        self.program = fluid.default_main_program().clone()
-        with fluid.program_guard(self.program):
-            self.fake_B = build_generator_resnet_9blocks(input_A, name="g_A")
-            self.fake_A = build_generator_resnet_9blocks(input_B, name="g_B")
-            self.cyc_A = build_generator_resnet_9blocks(self.fake_B, "g_B")
-            self.cyc_B = build_generator_resnet_9blocks(self.fake_A, "g_A")
-            self.infer_program = self.program.clone()
+class Cycle_Gan(fluid.dygraph.Layer):
+    def __init__(self, input_channel, istrain=True):
+        super (Cycle_Gan, self).__init__()
+
+        self.build_generator_resnet_9blocks_a = build_generator_resnet_9blocks(input_channel)
+        self.build_generator_resnet_9blocks_b = build_generator_resnet_9blocks(input_channel)
+        if istrain:
+            self.build_gen_discriminator_a = build_gen_discriminator(input_channel)
+            self.build_gen_discriminator_b = build_gen_discriminator(input_channel)
+
+    def forward(self,input_A,input_B,is_G,is_DA,is_DB):
+
+        if is_G:
+            fake_B = self.build_generator_resnet_9blocks_a(input_A)
+            fake_A = self.build_generator_resnet_9blocks_b(input_B)
+            cyc_A = self.build_generator_resnet_9blocks_b(fake_B)
+            cyc_B = self.build_generator_resnet_9blocks_a(fake_A)
+
             diff_A = fluid.layers.abs(
                 fluid.layers.elementwise_sub(
-                    x=input_A, y=self.cyc_A))
+                    x=input_A,y=cyc_A))
             diff_B = fluid.layers.abs(
                 fluid.layers.elementwise_sub(
-                    x=input_B, y=self.cyc_B))
-            self.cyc_loss = (
-                fluid.layers.reduce_mean(diff_A) +
-                fluid.layers.reduce_mean(diff_B)) * cycle_loss_factor
-            self.fake_rec_B = build_gen_discriminator(self.fake_B, "d_B")
-            self.disc_loss_B = fluid.layers.reduce_mean(
-                fluid.layers.square(self.fake_rec_B - 1))
-            self.g_loss_A = fluid.layers.elementwise_add(self.cyc_loss,
-                                                         self.disc_loss_B)
-            vars = []
-            for var in self.program.list_vars():
-                if fluid.io.is_parameter(var) and var.name.startswith("g_A"):
-                    vars.append(var.name)
-            self.param = vars
-            lr = 0.0002
-            optimizer = fluid.optimizer.Adam(
-                learning_rate=fluid.layers.piecewise_decay(
-                    boundaries=[
-                        100 * step_per_epoch, 120 * step_per_epoch,
-                        140 * step_per_epoch, 160 * step_per_epoch,
-                        180 * step_per_epoch
-                    ],
-                    values=[
-                        lr, lr * 0.8, lr * 0.6, lr * 0.4, lr * 0.2, lr * 0.1
-                    ]),
-                beta1=0.5,
-                name="g_A")
-            optimizer.minimize(self.g_loss_A, parameter_list=vars)
+                    x=input_B, y=cyc_B))
+            cyc_A_loss = fluid.layers.reduce_mean(diff_A) * lambda_A
+            cyc_B_loss = fluid.layers.reduce_mean(diff_B) * lambda_B
+            cyc_loss = cyc_A_loss + cyc_B_loss
+
+            fake_rec_A = self.build_gen_discriminator_a(fake_B)
+            g_A_loss = fluid.layers.reduce_mean(fluid.layers.square(fake_rec_A-1))
+         
+            fake_rec_B = self.build_gen_discriminator_b(fake_A)
+            g_B_loss = fluid.layers.reduce_mean(fluid.layers.square(fake_rec_B-1))
+            G = g_A_loss + g_B_loss
+            idt_A = self.build_generator_resnet_9blocks_a(input_B)
+            idt_loss_A = fluid.layers.reduce_mean(fluid.layers.abs(fluid.layers.elementwise_sub(x = input_B , y = idt_A))) * lambda_B * lambda_identity
+
+            idt_B = self.build_generator_resnet_9blocks_b(input_A)
+            idt_loss_B = fluid.layers.reduce_mean(fluid.layers.abs(fluid.layers.elementwise_sub(x = input_A , y = idt_B))) * lambda_A * lambda_identity
+            idt_loss = fluid.layers.elementwise_add(idt_loss_A,idt_loss_B)
+            g_loss = cyc_loss + G + idt_loss
+            return fake_A,fake_B,cyc_A,cyc_B,g_A_loss,g_B_loss,idt_loss_A,idt_loss_B,cyc_A_loss,cyc_B_loss,g_loss
 
 
-class GBTrainer():
-    def __init__(self, input_A, input_B):
-        self.program = fluid.default_main_program().clone()
-        with fluid.program_guard(self.program):
-            self.fake_B = build_generator_resnet_9blocks(input_A, name="g_A")
-            self.fake_A = build_generator_resnet_9blocks(input_B, name="g_B")
-            self.cyc_A = build_generator_resnet_9blocks(self.fake_B, "g_B")
-            self.cyc_B = build_generator_resnet_9blocks(self.fake_A, "g_A")
-            self.infer_program = self.program.clone()
-            diff_A = fluid.layers.abs(
-                fluid.layers.elementwise_sub(
-                    x=input_A, y=self.cyc_A))
-            diff_B = fluid.layers.abs(
-                fluid.layers.elementwise_sub(
-                    x=input_B, y=self.cyc_B))
-            self.cyc_loss = (
-                fluid.layers.reduce_mean(diff_A) +
-                fluid.layers.reduce_mean(diff_B)) * cycle_loss_factor
-            self.fake_rec_A = build_gen_discriminator(self.fake_A, "d_A")
-            disc_loss_A = fluid.layers.reduce_mean(
-                fluid.layers.square(self.fake_rec_A - 1))
-            self.g_loss_B = fluid.layers.elementwise_add(self.cyc_loss,
-                                                         disc_loss_A)
-            vars = []
-            for var in self.program.list_vars():
-                if fluid.io.is_parameter(var) and var.name.startswith("g_B"):
-                    vars.append(var.name)
-            self.param = vars
-            lr = 0.0002
-            optimizer = fluid.optimizer.Adam(
-                learning_rate=fluid.layers.piecewise_decay(
-                    boundaries=[
-                        100 * step_per_epoch, 120 * step_per_epoch,
-                        140 * step_per_epoch, 160 * step_per_epoch,
-                        180 * step_per_epoch
-                    ],
-                    values=[
-                        lr, lr * 0.8, lr * 0.6, lr * 0.4, lr * 0.2, lr * 0.1
-                    ]),
-                beta1=0.5,
-                name="g_B")
-            optimizer.minimize(self.g_loss_B, parameter_list=vars)
+        if is_DA:
+
+            ### D
+            rec_B = self.build_gen_discriminator_a(input_A)
+            fake_pool_rec_B = self.build_gen_discriminator_a(input_B)
+            
+            return rec_B, fake_pool_rec_B
+
+        if is_DB:
+
+            rec_A = self.build_gen_discriminator_b(input_A)
+
+            fake_pool_rec_A = self.build_gen_discriminator_b(input_B)
 
 
-class DATrainer():
-    def __init__(self, input_A, fake_pool_A):
-        self.program = fluid.default_main_program().clone()
-        with fluid.program_guard(self.program):
-            self.rec_A = build_gen_discriminator(input_A, "d_A")
-            self.fake_pool_rec_A = build_gen_discriminator(fake_pool_A, "d_A")
-            self.d_loss_A = (fluid.layers.square(self.fake_pool_rec_A) +
-                             fluid.layers.square(self.rec_A - 1)) / 2.0
-            self.d_loss_A = fluid.layers.reduce_mean(self.d_loss_A)
+        return rec_A, fake_pool_rec_A
 
-            optimizer = fluid.optimizer.Adam(learning_rate=0.0002, beta1=0.5)
-            optimizer._name = "d_A"
-            vars = []
-            for var in self.program.list_vars():
-                if fluid.io.is_parameter(var) and var.name.startswith("d_A"):
-                    vars.append(var.name)
-
-            self.param = vars
-            lr = 0.0002
-            optimizer = fluid.optimizer.Adam(
-                learning_rate=fluid.layers.piecewise_decay(
-                    boundaries=[
-                        100 * step_per_epoch, 120 * step_per_epoch,
-                        140 * step_per_epoch, 160 * step_per_epoch,
-                        180 * step_per_epoch
-                    ],
-                    values=[
-                        lr, lr * 0.8, lr * 0.6, lr * 0.4, lr * 0.2, lr * 0.1
-                    ]),
-                beta1=0.5,
-                name="d_A")
-
-            optimizer.minimize(self.d_loss_A, parameter_list=vars)
-
-
-class DBTrainer():
-    def __init__(self, input_B, fake_pool_B):
-        self.program = fluid.default_main_program().clone()
-        with fluid.program_guard(self.program):
-            self.rec_B = build_gen_discriminator(input_B, "d_B")
-            self.fake_pool_rec_B = build_gen_discriminator(fake_pool_B, "d_B")
-            self.d_loss_B = (fluid.layers.square(self.fake_pool_rec_B) +
-                             fluid.layers.square(self.rec_B - 1)) / 2.0
-            self.d_loss_B = fluid.layers.reduce_mean(self.d_loss_B)
-            optimizer = fluid.optimizer.Adam(learning_rate=0.0002, beta1=0.5)
-            vars = []
-            for var in self.program.list_vars():
-                if fluid.io.is_parameter(var) and var.name.startswith("d_B"):
-                    vars.append(var.name)
-            self.param = vars
-            lr = 0.0002
-            optimizer = fluid.optimizer.Adam(
-                learning_rate=fluid.layers.piecewise_decay(
-                    boundaries=[
-                        100 * step_per_epoch, 120 * step_per_epoch,
-                        140 * step_per_epoch, 160 * step_per_epoch,
-                        180 * step_per_epoch
-                    ],
-                    values=[
-                        lr, lr * 0.8, lr * 0.6, lr * 0.4, lr * 0.2, lr * 0.1
-                    ]),
-                beta1=0.5,
-                name="d_B")
-            optimizer.minimize(self.d_loss_B, parameter_list=vars)

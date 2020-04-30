@@ -9,19 +9,13 @@ from kpi import CostKpi, DurationKpi, AccKpi
 
 #### NOTE kpi.py should shared in models in some way!!!!
 
-d_train_cost_kpi = CostKpi('d_train_cost', 0.05, 0, actived=True, desc='train cost of discriminator')
-g_train_cost_kpi = CostKpi('g_train_cost', 0.05, 0, actived=True, desc='train cost of generator')
-train_speed_kpi = DurationKpi(
-    'duration',
-    0.05,
-    0,
-    actived=True,
-    unit_repr='second',
-    desc='train time used in one GPU card')
-
-
-tracking_kpis = [d_train_cost_kpi, g_train_cost_kpi, train_speed_kpi]
-
+g_loss = CostKpi('g_loss', 0.3, 0, actived=True, desc="g loss")
+g_A_loss = CostKpi('g_A_loss', 0.3, 0, actived=True, desc="g A loss")
+g_B_loss = CostKpi('g_B_loss', 0.3, 0, actived=True, desc="g B loss")
+d_A_loss = CostKpi('d_A_loss', 0.3, 0, actived=True, desc="d A loss")
+d_B_loss = CostKpi('d_B_loss', 0.3, 0, actived=True, desc="d B loss")
+tracking_kpis = [g_loss, g_A_loss, g_B_loss,
+                 d_A_loss, d_B_loss]
 
 def parse_log(log):
     '''
@@ -40,12 +34,12 @@ def parse_log(log):
     "
     '''
     for line in log.split('\n'):
-        fs = line.strip().split(',')
+        fs = line.strip().split('\t')
         print(fs)
         if len(fs) == 3 and fs[0] == 'kpis':
+            print("-----%s" % fs)
             kpi_name = fs[1]
             kpi_value = float(fs[2])
-            print("kpi {}={}".format(kpi_name, kpi_value))
             yield kpi_name, kpi_value
 
 
@@ -62,7 +56,7 @@ def log_to_ce(log):
 
 if __name__ == '__main__':
     log = sys.stdin.read()
-#    print("*****")
-#    print(log)
-#    print("****")
+    print("*****")
+    print(log)
+    print("****")
     log_to_ce(log)

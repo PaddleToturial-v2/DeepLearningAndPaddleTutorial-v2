@@ -1,4 +1,4 @@
-#   Copyright (c) 2019 PaddlePaddle Authors. All Rights Reserved.
+# Copyright (c) 2019 PaddlePaddle Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,26 +11,27 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 import os
-from PIL import Image
+from PIL import Image, ImageOps
 import numpy as np
 
-A_LIST_FILE = "./data/horse2zebra/trainA.txt"
-B_LIST_FILE = "./data/horse2zebra/trainB.txt"
-A_TEST_LIST_FILE = "./data/horse2zebra/testA.txt"
-B_TEST_LIST_FILE = "./data/horse2zebra/testB.txt"
-IMAGES_ROOT = "./data/horse2zebra/"
-
+DATASET = "cityscapes"
+A_LIST_FILE = "./data/"+DATASET+"/trainA.txt"
+B_LIST_FILE = "./data/"+DATASET+"/trainB.txt"
+A_TEST_LIST_FILE = "./data/"+DATASET+"/testA.txt"
+B_TEST_LIST_FILE = "./data/"+DATASET+"/testB.txt"
+IMAGES_ROOT = "./data/"+DATASET+"/"
 
 def image_shape():
     return [3, 256, 256]
 
 
 def max_images_num():
-    return 1335
+    return 2974
 
 
 def reader_creater(list_file, cycle=True, shuffle=True, return_name=False):
@@ -43,12 +44,22 @@ def reader_creater(list_file, cycle=True, shuffle=True, return_name=False):
             for file in images:
                 file = file.strip("\n\r\t ")
                 image = Image.open(file)
-                image = image.resize((256, 256))
-                image = np.array(image) / 127.5 - 1
-                if len(image.shape) != 3:
-                    continue
-                image = image[:, :, 0:3].astype("float32")
-                image = image.transpose([2, 0, 1])
+                ## Resize
+                image = image.resize((286, 286), Image.BICUBIC)
+                ## RandomCrop
+                i = np.random.randint(0, 30)
+                j = np.random.randint(0, 30)
+                image = image.crop((i, j , i+256, j+256))
+                # RandomHorizontalFlip
+                sed = np.random.rand()
+                if sed > 0.5:
+                    image = ImageOps.mirror(image)
+                # ToTensor
+                image = np.array(image).transpose([2, 0, 1]).astype('float32')
+                image = image / 255.0
+                # Normalize, mean=[0.5,0.5,0.5], std=[0.5,0.5,0.5]
+                image = (image - 0.5) / 0.5
+                
                 if return_name:
                     yield image[np.newaxis, :], os.path.basename(file)
                 else:

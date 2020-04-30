@@ -1,4 +1,4 @@
-#   Copyright (c) 2019 PaddlePaddle Authors. All Rights Reserved.
+# Copyright (c) 2019 PaddlePaddle Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,165 +11,127 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from __future__ import division
 import paddle.fluid as fluid
 import numpy as np
+from paddle.fluid.dygraph.nn import Conv2D,  Conv2DTranspose , BatchNorm ,Pool2D
 import os
 
 # cudnn is not better when batch size is 1.
-use_cudnn_conv2d_transpose = False
-use_cudnn_conv2d = True
-use_layer_norm = True
-
-def cal_padding(img_size, stride, filter_size, dilation=1):
-    """Calculate padding size."""
-    valid_filter_size = dilation * (filter_size - 1) + 1
-    if img_size % stride == 0:
-        out_size = max(filter_size - stride, 0)
-    else:
-        out_size = max(filter_size - (img_size % stride), 0)
-    return out_size // 2, out_size - out_size // 2
+use_cudnn = False
 
 
-def instance_norm(input, name=None):
-    # TODO(lvmengsi@baidu.com): Check the accuracy when using fluid.layers.layer_norm.
-    if use_layer_norm:
-        return fluid.layers.layer_norm(input, begin_norm_axis=2) 
+class conv2d(fluid.dygraph.Layer):
+    """docstring for Conv2D"""
+    def __init__(self,
+                num_channels,
+                num_filters=64,
+                filter_size=7,
+                stride=1,
+                stddev=0.02,
+                padding=0,
+                norm=True,
+                relu=True,
+                relufactor=0.0,
+                use_bias=False):
+        super(conv2d, self).__init__()
 
-    helper = fluid.layer_helper.LayerHelper("instance_norm", **locals())
-    dtype = helper.input_dtype()
-    epsilon = 1e-5
-    mean = fluid.layers.reduce_mean(input, dim=[2, 3], keep_dim=True)
-    var = fluid.layers.reduce_mean(
-        fluid.layers.square(input - mean), dim=[2, 3], keep_dim=True)
-    if name is not None:
-        scale_name = name + "_scale"
-        offset_name = name + "_offset"
-    scale_param = fluid.ParamAttr(
-        name=scale_name,
-        initializer=fluid.initializer.TruncatedNormal(1.0, 0.02),
-        trainable=True)
-    offset_param = fluid.ParamAttr(
-        name=offset_name,
-        initializer=fluid.initializer.Constant(0.0),
-        trainable=True)
-    scale = helper.create_parameter(
-        attr=scale_param, shape=input.shape[1:2], dtype=dtype)
-    offset = helper.create_parameter(
-        attr=offset_param, shape=input.shape[1:2], dtype=dtype)
+        if use_bias == False:
+            con_bias_attr = False
+        else:
+            con_bias_attr = fluid.ParamAttr(initializer=fluid.initializer.Constant(0.0))
 
-    tmp = fluid.layers.elementwise_mul(x=(input - mean), y=scale, axis=1)
-    tmp = tmp / fluid.layers.sqrt(var + epsilon)
-    tmp = fluid.layers.elementwise_add(tmp, offset, axis=1)
-    return tmp
+        self.conv = Conv2D(
+            num_channels=num_channels,
+            num_filters=num_filters,
+            filter_size=filter_size,
+            stride=stride,
+            padding=padding,
+            use_cudnn=use_cudnn,
+            param_attr=fluid.ParamAttr(
+                initializer=fluid.initializer.NormalInitializer(loc=0.0,scale=stddev)),
+            bias_attr=con_bias_attr)
+        if norm:
+            self.bn = BatchNorm(
+                num_channels=num_filters,
+                param_attr=fluid.ParamAttr(
+                    initializer=fluid.initializer.NormalInitializer(1.0,0.02)),
+                bias_attr=fluid.ParamAttr(
+                    initializer=fluid.initializer.Constant(0.0)),
+                trainable_statistics=True
+                )
+    
+        self.relufactor = relufactor
+        self.use_bias = use_bias
+        self.norm = norm
+        self.relu = relu
 
-
-def conv2d(input,
-           num_filters=64,
-           filter_size=7,
-           stride=1,
-           stddev=0.02,
-           padding="VALID",
-           name="conv2d",
-           norm=True,
-           relu=True,
-           relufactor=0.0):
-    """Wrapper for conv2d op to support VALID and SAME padding mode."""
-    need_crop = False
-    if padding == "SAME":
-        top_padding, bottom_padding = cal_padding(input.shape[2], stride,
-                                                  filter_size)
-        left_padding, right_padding = cal_padding(input.shape[2], stride,
-                                                  filter_size)
-        height_padding = bottom_padding
-        width_padding = right_padding
-        if top_padding != bottom_padding or left_padding != right_padding:
-            height_padding = top_padding + stride
-            width_padding = left_padding + stride
-            need_crop = True
-    else:
-        height_padding = 0
-        width_padding = 0
-
-    padding = [height_padding, width_padding]
-    param_attr = fluid.ParamAttr(
-        name=name + "_w",
-        initializer=fluid.initializer.TruncatedNormal(scale=stddev))
-    bias_attr = fluid.ParamAttr(
-        name=name + "_b", initializer=fluid.initializer.Constant(0.0))
-    conv = fluid.layers.conv2d(
-        input,
-        num_filters,
-        filter_size,
-        name=name,
-        stride=stride,
-        padding=padding,
-        use_cudnn=use_cudnn_conv2d,
-        param_attr=param_attr,
-        bias_attr=bias_attr)
-    if need_crop:
-        conv = fluid.layers.crop(
-            conv,
-            shape=(-1, conv.shape[1], conv.shape[2] - 1, conv.shape[3] - 1),
-            offsets=(0, 0, 1, 1))
-    if norm:
-        conv = instance_norm(input=conv, name=name + "_norm")
-    if relu:
-        conv = fluid.layers.leaky_relu(conv, alpha=relufactor)
-    return conv
+    
+    def forward(self,inputs):
+        conv = self.conv(inputs)
+        if self.norm:
+            conv = self.bn(conv)
+        if self.relu:
+            conv = fluid.layers.leaky_relu(conv,alpha=self.relufactor)
+        return conv
 
 
-def deconv2d(input,
-             out_shape,
-             num_filters=64,
-             filter_size=7,
-             stride=1,
-             stddev=0.02,
-             padding="VALID",
-             name="conv2d",
-             norm=True,
-             relu=True,
-             relufactor=0.0):
-    """Wrapper for deconv2d op to support VALID and SAME padding mode."""
-    need_crop = False
-    if padding == "SAME":
-        top_padding, bottom_padding = cal_padding(out_shape[0], stride,
-                                                  filter_size)
-        left_padding, right_padding = cal_padding(out_shape[1], stride,
-                                                  filter_size)
-        height_padding = top_padding
-        width_padding = left_padding
-        if top_padding != bottom_padding or left_padding != right_padding:
-            need_crop = True
-    else:
-        height_padding = 0
-        width_padding = 0
+class DeConv2D(fluid.dygraph.Layer):
+    def __init__(self,
+            num_channels,
+            num_filters=64,
+            filter_size=7,
+            stride=1,
+            stddev=0.02,
+            padding=[0,0],
+            outpadding=[0,0,0,0],
+            relu=True,
+            norm=True,
+            relufactor=0.0,
+            use_bias=False
+            ):
+        super(DeConv2D,self).__init__()
 
-    padding = [height_padding, width_padding]
+        if use_bias == False:
+            de_bias_attr = False
+        else:
+            de_bias_attr = fluid.ParamAttr(initializer=fluid.initializer.Constant(0.0))
 
-    param_attr = fluid.ParamAttr(
-        name=name + "_w",
-        initializer=fluid.initializer.TruncatedNormal(scale=stddev))
-    bias_attr = fluid.ParamAttr(
-        name=name + "_b", initializer=fluid.initializer.Constant(0.0))
-    conv = fluid.layers.conv2d_transpose(
-        input,
-        num_filters,
-        name=name,
-        filter_size=filter_size,
-        stride=stride,
-        padding=padding,
-        use_cudnn=use_cudnn_conv2d_transpose,
-        param_attr=param_attr,
-        bias_attr=bias_attr)
+        self._deconv = Conv2DTranspose(num_channels,
+                                       num_filters,
+                                       filter_size=filter_size,
+                                       stride=stride,
+                                       padding=padding,
+                                       param_attr=fluid.ParamAttr(
+                                           initializer=fluid.initializer.NormalInitializer(loc=0.0, scale=stddev)),
+                                       bias_attr=de_bias_attr)
 
-    if need_crop:
-        conv = fluid.layers.crop(
-            conv,
-            shape=(-1, conv.shape[1], conv.shape[2] - 1, conv.shape[3] - 1),
-            offsets=(0, 0, 0, 0))
-    if norm:
-        conv = instance_norm(input=conv, name=name + "_norm")
-    if relu:
-        conv = fluid.layers.leaky_relu(conv, alpha=relufactor)
-    return conv
+
+
+        if norm:
+            self.bn = BatchNorm(
+                num_channels=num_filters,
+                param_attr=fluid.ParamAttr(
+                    initializer=fluid.initializer.NormalInitializer(1.0, 0.02)),
+                bias_attr=fluid.ParamAttr(initializer=fluid.initializer.Constant(0.0)),
+                trainable_statistics=True)        
+        self.outpadding = outpadding
+        self.relufactor = relufactor
+        self.use_bias = use_bias
+        self.norm = norm
+        self.relu = relu
+
+    def forward(self,inputs):
+        #todo: add use_bias
+        #if self.use_bias==False:
+        conv = self._deconv(inputs)
+        #else:
+        #    conv = self._deconv(inputs)
+        conv = fluid.layers.pad2d(conv, paddings=self.outpadding, mode='constant', pad_value=0.0)
+
+        if self.norm:
+            conv = self.bn(conv)
+        if self.relu:
+            conv = fluid.layers.leaky_relu(conv,alpha=self.relufactor)
+        return conv
