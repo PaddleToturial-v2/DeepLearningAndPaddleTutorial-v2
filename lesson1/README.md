@@ -12,6 +12,5 @@
 * [broadcast.py](./broadcast.py)： python中广播机制的示例代码
 * [compare_efficiency.py](./compare_efficiency.py)： 比较向量化和直接计算之间的效率差异
 * [matplotlib_fig.py](./matplotlib_fig.py)： matplotlib中的与数学相关的图的绘制操作
-* [matplotlib_picture.py](./matplotlib_picture.py): matplotlib中的与图像处理相关的操作
 * [random_module.py](./random_module.py)： numpy中random模块的基本操作
 * [transpose.py](./transpose.py)：矩阵转置在numpy中的实现
